@@ -9,14 +9,13 @@ interface Node {
 
 export class Pathfinder {
   private grid: boolean[][];
-  private width: number;
-  private height: number;
 
   constructor(walkableGrid: boolean[][]) {
     this.grid = walkableGrid;
-    this.height = walkableGrid.length;
-    this.width = walkableGrid[0]?.length ?? 0;
   }
+
+  private get height(): number { return this.grid.length; }
+  private get width(): number { return this.grid[0]?.length ?? 0; }
 
   findPath(
     startX: number,

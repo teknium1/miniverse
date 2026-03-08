@@ -62,7 +62,18 @@ const OBJECT_STRUCTURE = [
   'same perspective as a top-down RPG where camera looks down at ~30 degrees',
 ].join(', ');
 
-export type SheetType = 'walk' | 'action' | 'furniture' | 'object';
+const TEXTURE_STRUCTURE = [
+  'seamless tileable texture for a pixel RPG',
+  'top-down view',
+  'single square tile that repeats perfectly in all directions',
+  'no visible seams when tiled',
+  'no objects no characters no furniture',
+  'the texture pattern must fill the ENTIRE image edge to edge with absolutely NO border NO frame NO margin NO padding NO outline',
+  'solid opaque background',
+  'full bleed pattern only',
+].join(', ');
+
+export type SheetType = 'walk' | 'action' | 'furniture' | 'object' | 'texture';
 
 export function buildPrompt(description: string, type: SheetType): string {
   switch (type) {
@@ -74,5 +85,7 @@ export function buildPrompt(description: string, type: SheetType): string {
       return `${BASE_STYLE}, ${FURNITURE_STRUCTURE}, ${description}, warm office lighting from top-left, consistent style across all items`;
     case 'object':
       return `${BASE_STYLE}, ${OBJECT_STRUCTURE}, ${description}, warm office lighting from top-left`;
+    case 'texture':
+      return `${BASE_STYLE}, ${TEXTURE_STRUCTURE}, ${description}`;
   }
 }

@@ -227,16 +227,99 @@ export class Miniverse {
     this.typedLocations = locations;
   }
 
+  /** Resize the grid by expanding right/down. Existing coords stay the same. */
+  resizeGrid(newCols: number, newRows: number) {
+    const config = this.scene.config;
+    const oldRows = config.walkable.length;
+    const oldCols = config.walkable[0]?.length ?? 0;
+    if (newCols < 4 || newRows < 4) return;
+
+    // Expand walkable grid
+    for (let r = 0; r < newRows; r++) {
+      if (r >= oldRows) {
+        config.walkable[r] = new Array(newCols).fill(true);
+      }
+      while (config.walkable[r].length < newCols) {
+        config.walkable[r].push(true);
+      }
+      config.walkable[r].length = newCols;
+    }
+    config.walkable.length = newRows;
+
+    // Expand floor layer
+    for (const layer of config.layers) {
+      for (let r = 0; r < newRows; r++) {
+        if (r >= layer.length) {
+          layer[r] = new Array(newCols).fill(0);
+        }
+        while (layer[r].length < newCols) {
+          layer[r].push(0);
+        }
+        layer[r].length = newCols;
+      }
+      layer.length = newRows;
+
+      // Set border tiles to wall (tile index 1)
+      for (let r = 0; r < newRows; r++) {
+        for (let c = 0; c < newCols; c++) {
+          if (r === 0 || r === newRows - 1 || c === 0 || c === newCols - 1) {
+            layer[r][c] = 1;
+          } else if (r >= oldRows - 1 || c >= oldCols - 1) {
+            // Old border that's now interior becomes floor
+            layer[r][c] = 0;
+          }
+        }
+      }
+    }
+
+    // Resize canvas to match
+    const tw = config.tileWidth;
+    const th = config.tileHeight;
+    this.renderer.resize(newCols * tw, newRows * th);
+  }
+
+  getGridSize(): { cols: number; rows: number } {
+    const grid = this.scene.config.walkable;
+    return { cols: grid[0]?.length ?? 0, rows: grid.length };
+  }
+
+  getFloorLayer(): number[][] {
+    return this.scene.config.layers[0];
+  }
+
+  setTile(col: number, row: number, tileId: number) {
+    const layer = this.scene.config.layers[0];
+    if (row >= 0 && row < layer.length && col >= 0 && col < layer[0].length) {
+      layer[row][col] = tileId;
+      // Deadspace tiles are non-walkable
+      const walkable = this.scene.config.walkable;
+      if (row < walkable.length && col < walkable[0].length) {
+        walkable[row][col] = tileId >= 0;
+      }
+    }
+  }
+
+  getTilesetImage(): HTMLImageElement | null {
+    return (this.scene as any).tileImages?.[0] ?? null;
+  }
+
+  getTilesetConfig() {
+    return this.scene.config.tilesets[0];
+  }
+
   /** Update walkability grid: reset to base then overlay blocked tiles */
   updateWalkability(blockedTiles: Set<string>) {
     const grid = this.scene.config.walkable;
     const rows = grid.length;
     const cols = grid[0]?.length ?? 0;
 
-    // Reset: walls on edges, floor inside
+    // Reset: walls on edges, deadspace tiles, floor inside
+    const floor = this.scene.config.layers[0];
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
-        grid[r][c] = !(r === 0 || r === rows - 1 || c === 0 || c === cols - 1);
+        const isEdge = r === 0 || r === rows - 1 || c === 0 || c === cols - 1;
+        const isDead = floor?.[r]?.[c] < 0;
+        grid[r][c] = !isEdge && !isDead;
       }
     }
 
@@ -249,9 +332,12 @@ export class Miniverse {
     }
 
     // Keep anchor destinations walkable so pathfinding can reach them
+    // (but never override deadspace)
     for (const loc of this.typedLocations) {
       if (loc.y >= 0 && loc.y < rows && loc.x >= 0 && loc.x < cols) {
-        grid[loc.y][loc.x] = true;
+        if (floor?.[loc.y]?.[loc.x] >= 0) {
+          grid[loc.y][loc.x] = true;
+        }
       }
     }
   }

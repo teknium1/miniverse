@@ -64,7 +64,11 @@ export class Scene implements RenderLayer {
       for (let row = 0; row < layer.length; row++) {
         for (let col = 0; col < layer[row].length; col++) {
           const tileId = layer[row][col];
-          if (tileId < 0) continue;
+          if (tileId < 0) {
+            ctx.fillStyle = '#2a2a2e';
+            ctx.fillRect(col * tileWidth, row * tileHeight, tileWidth, tileHeight);
+            continue;
+          }
 
           const tsIndex = 0;
           const ts = this.config.tilesets[tsIndex];

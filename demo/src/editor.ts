@@ -14,11 +14,11 @@ import {
   type LoadedPiece,
 } from './furniture';
 
-export type EditorTab = 'furniture' | 'characters' | 'behavior';
+export type EditorTab = 'world' | 'furniture' | 'characters' | 'behavior';
 
 export class Editor {
   private active = false;
-  private tab: EditorTab = 'furniture';
+  private tab: EditorTab = 'world';
 
   private canvas: HTMLCanvasElement;
   private scale: number;
@@ -31,6 +31,12 @@ export class Editor {
   private panel: HTMLElement | null = null;
   private tabBtns: Map<EditorTab, HTMLElement> = new Map();
   private tabContent: HTMLElement | null = null;
+
+  // Undo/redo
+  private undoStack: string[] = [];
+  private redoStack: string[] = [];
+  private maxHistory = 50;
+  private preActionSnapshot: string | null = null;
 
   // Characters state
   private selectedResidentId: string | null = null;
@@ -72,6 +78,7 @@ export class Editor {
     this.renderGrid(ctx);
 
     switch (this.tab) {
+      case 'world': this.renderWorldOverlay(ctx); break;
       case 'furniture': this.renderFurnitureOverlay(ctx); break;
       case 'characters': this.renderCharactersOverlay(ctx); break;
       case 'behavior': this.renderBehaviorOverlay(ctx); break;
@@ -93,6 +100,165 @@ export class Editor {
     for (let y = 0; y <= ch; y += T) {
       ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cw, y); ctx.stroke();
     }
+  }
+
+  // --- World overlay ---
+
+  private selectedTileId = 0;
+  private tileNames: Record<number, string> = {
+    0: 'Bamboo Floor',
+    1: 'White Wall',
+    2: 'Wood Slat Wall',
+    3: 'Greenery Wall',
+    4: 'Window',
+    5: 'Door',
+  };
+
+  private renderWorldOverlay(ctx: CanvasRenderingContext2D) {
+    const T = this.tileSize;
+    const floor = this.mv.getFloorLayer();
+    if (!floor) return;
+
+    for (let r = 0; r < floor.length; r++) {
+      for (let c = 0; c < floor[r].length; c++) {
+        const tid = floor[r][c];
+        if (tid < 0) {
+          // Deadspace — dark fill with X
+          ctx.fillStyle = 'rgba(0,0,0,0.85)';
+          ctx.fillRect(c * T, r * T, T, T);
+          ctx.strokeStyle = 'rgba(255,50,50,0.4)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(c * T + 4, r * T + 4);
+          ctx.lineTo((c + 1) * T - 4, (r + 1) * T - 4);
+          ctx.moveTo((c + 1) * T - 4, r * T + 4);
+          ctx.lineTo(c * T + 4, (r + 1) * T - 4);
+          ctx.stroke();
+        } else if (tid === 1) {
+          // Wall hint
+          ctx.globalAlpha = 0.15;
+          ctx.fillStyle = '#ff4444';
+          ctx.fillRect(c * T, r * T, T, T);
+          ctx.globalAlpha = 1;
+        }
+      }
+    }
+  }
+
+  private buildWorldTab() {
+    const c = this.tabContent!;
+
+    // Controls
+    const hint = this.el('div', 'padding:6px 10px; border-bottom:1px solid #333; line-height:1.6;');
+    hint.innerHTML = [
+      '<span style="color:#00ff88">Click</span> paint tile',
+      '<span style="color:#00ff88">Drag</span> paint area',
+    ].join('<br>');
+    c.appendChild(hint);
+
+    // Grid size
+    const gridSection = this.el('div', 'padding:6px 10px; border-bottom:1px solid #333; display:flex; align-items:center; gap:6px;');
+    const { cols, rows } = this.mv.getGridSize();
+    this.gridLabel = this.el('span', 'flex:1; color:#888; font-size:10px;');
+    this.gridLabel.textContent = `Grid: ${cols}×${rows}`;
+    gridSection.appendChild(this.gridLabel);
+    gridSection.appendChild(this.makeBtn('+C', () => { this.beginAction(); this.resizeGrid(1, 0); this.commitAction(); }));
+    gridSection.appendChild(this.makeBtn('-C', () => { this.beginAction(); this.resizeGrid(-1, 0); this.commitAction(); }));
+    gridSection.appendChild(this.makeBtn('+R', () => { this.beginAction(); this.resizeGrid(0, 1); this.commitAction(); }));
+    gridSection.appendChild(this.makeBtn('-R', () => { this.beginAction(); this.resizeGrid(0, -1); this.commitAction(); }));
+    c.appendChild(gridSection);
+
+    // Tile palette
+    const palLabel = this.el('div', 'padding:4px 10px; color:#555; font-size:9px; text-transform:uppercase; letter-spacing:1px;');
+    palLabel.textContent = 'Tiles';
+    c.appendChild(palLabel);
+
+    const palette = this.el('div', 'padding:4px 8px; display:flex; flex-wrap:wrap; gap:4px;');
+
+    // Deadspace tile (always first)
+    const deadItem = this.el('div', `
+      width:40px; height:40px; border:2px solid ${this.selectedTileId === -1 ? '#00ff88' : '#333'}; border-radius:3px;
+      cursor:pointer; background:#0a0a0a; overflow:hidden; position:relative;
+      display:flex; align-items:center; justify-content:center;
+    `);
+    deadItem.title = 'Deadspace (void)';
+    const skull = this.el('span', 'font-size:20px; opacity:0.6; user-select:none;');
+    skull.textContent = '\u2620';
+    deadItem.appendChild(skull);
+    deadItem.addEventListener('click', () => {
+      this.selectedTileId = -1;
+      this.buildTabContent();
+    });
+    palette.appendChild(deadItem);
+
+    const tsImg = this.mv.getTilesetImage();
+    const tsConfig = this.mv.getTilesetConfig();
+
+    if (tsImg && tsConfig) {
+      const tileCount = tsConfig.columns * Math.ceil(tsImg.naturalHeight / tsConfig.tileHeight);
+
+      // Scan tiles to find which ones have content
+      const scanCanvas = document.createElement('canvas');
+      scanCanvas.width = tsImg.naturalWidth;
+      scanCanvas.height = tsImg.naturalHeight;
+      const scanCtx = scanCanvas.getContext('2d')!;
+      scanCtx.drawImage(tsImg, 0, 0);
+
+      const tilesWithContent: number[] = [];
+      for (let i = 0; i < tileCount; i++) {
+        const sx = (i % tsConfig.columns) * tsConfig.tileWidth;
+        const sy = Math.floor(i / tsConfig.columns) * tsConfig.tileHeight;
+        const data = scanCtx.getImageData(sx, sy, tsConfig.tileWidth, tsConfig.tileHeight).data;
+        let hasContent = false;
+        for (let p = 3; p < data.length; p += 4) {
+          if (data[p] > 0) { hasContent = true; break; }
+        }
+        if (hasContent) tilesWithContent.push(i);
+      }
+
+      for (const i of tilesWithContent) {
+        const tileName = this.tileNames[i] ?? `Tile ${i}`;
+        const item = this.el('div', `
+          width:40px; height:40px; border:2px solid ${i === this.selectedTileId ? '#00ff88' : '#333'}; border-radius:3px;
+          cursor:pointer; background:#1a1a2e; overflow:hidden; position:relative;
+        `);
+        item.title = tileName;
+        // Draw tile preview using a small canvas
+        const preview = document.createElement('canvas');
+        preview.width = tsConfig.tileWidth;
+        preview.height = tsConfig.tileHeight;
+        preview.style.cssText = 'width:36px; height:36px; image-rendering:pixelated;';
+        const pctx = preview.getContext('2d')!;
+        pctx.imageSmoothingEnabled = false;
+        const sx = (i % tsConfig.columns) * tsConfig.tileWidth;
+        const sy = Math.floor(i / tsConfig.columns) * tsConfig.tileHeight;
+        pctx.drawImage(tsImg, sx, sy, tsConfig.tileWidth, tsConfig.tileHeight, 0, 0, tsConfig.tileWidth, tsConfig.tileHeight);
+        item.appendChild(preview);
+
+        // Label
+        const label = this.el('div', 'position:absolute; bottom:0; right:1px; font-size:7px; color:#888;');
+        label.textContent = `${i}`;
+        item.appendChild(label);
+
+        item.addEventListener('click', () => {
+          this.selectedTileId = i;
+          this.buildTabContent();
+        });
+        palette.appendChild(item);
+      }
+    }
+    c.appendChild(palette);
+  }
+
+  private paintTile(wx: number, wy: number) {
+    const T = this.tileSize;
+    const col = Math.floor(wx / T);
+    const row = Math.floor(wy / T);
+
+    // Don't paint deadspace on tiles occupied by furniture
+    if (this.selectedTileId < 0 && this.furniture.occupiesTile(col, row)) return;
+
+    this.mv.setTile(col, row, this.selectedTileId);
   }
 
   // --- Furniture overlay ---
@@ -251,7 +417,7 @@ export class Editor {
     // Tab bar
     const tabBar = document.createElement('div');
     tabBar.style.cssText = 'display:flex; border-bottom:1px solid #333;';
-    const tabs: EditorTab[] = ['furniture', 'characters', 'behavior'];
+    const tabs: EditorTab[] = ['world', 'furniture', 'characters', 'behavior'];
     for (const t of tabs) {
       const btn = document.createElement('div');
       btn.textContent = t.charAt(0).toUpperCase() + t.slice(1, 4);
@@ -270,6 +436,17 @@ export class Editor {
     this.tabContent = document.createElement('div');
     this.tabContent.style.cssText = 'flex:1; overflow-y:auto; display:flex; flex-direction:column;';
     this.panel.appendChild(this.tabContent);
+
+    // Undo/redo bar (bottom)
+    const undoBar = document.createElement('div');
+    undoBar.style.cssText = 'display:flex; border-top:1px solid #333; padding:4px 6px; gap:4px; margin-top:auto;';
+    const undoBtn = this.makeBtn('⟵ Undo', () => this.undo());
+    const redoBtn = this.makeBtn('Redo ⟶', () => this.redo());
+    undoBtn.style.cssText += 'flex:1; text-align:center; font-size:11px; padding:4px 0;';
+    redoBtn.style.cssText += 'flex:1; text-align:center; font-size:11px; padding:4px 0;';
+    undoBar.appendChild(undoBtn);
+    undoBar.appendChild(redoBtn);
+    this.panel.appendChild(undoBar);
 
     this.wrapper.appendChild(this.panel);
     this.updateTabStyles();
@@ -305,6 +482,7 @@ export class Editor {
     if (!this.tabContent) return;
     this.tabContent.innerHTML = '';
     switch (this.tab) {
+      case 'world': this.buildWorldTab(); break;
       case 'furniture': this.buildFurnitureTab(); break;
       case 'characters': this.buildCharactersTab(); break;
       case 'behavior': this.buildBehaviorTab(); break;
@@ -313,6 +491,7 @@ export class Editor {
 
   private refreshTabContent() {
     switch (this.tab) {
+      case 'world': break; // static panel, no per-frame refresh needed
       case 'furniture': this.refreshFurnitureTab(); break;
       case 'characters': this.refreshCharactersTab(); break;
       case 'behavior': this.refreshBehaviorTab(); break;
@@ -363,8 +542,10 @@ export class Editor {
       item.addEventListener('mouseenter', () => { item.style.borderColor = '#00ff88'; });
       item.addEventListener('mouseleave', () => { item.style.borderColor = '#333'; });
       item.addEventListener('click', () => {
+        this.beginAction();
         const p = this.furniture.addPiece(id);
         if (p) this.furniture.selected = p;
+        this.commitAction();
       });
       grid.appendChild(item);
     }
@@ -490,10 +671,12 @@ export class Editor {
 
     const sel = this.charsInfo.querySelector('#ed-home-select') as HTMLSelectElement | null;
     sel?.addEventListener('change', () => {
+      this.beginAction();
       r.setHomePosition(sel.value);
       this.saveCharacterAssignments();
       this.charsBuiltFor = null; // force info panel rebuild
       this.rebuildCharsList();
+      this.commitAction();
     });
   }
 
@@ -588,10 +771,17 @@ export class Editor {
     };
   }
 
+  private painting = false;
+
   private onMouseDown(e: MouseEvent) {
     const { x, y } = this.toWorld(e);
+    this.beginAction();
 
-    if (this.tab === 'furniture') {
+    if (this.tab === 'world') {
+      this.paintTile(x, y);
+      this.painting = true;
+      e.preventDefault();
+    } else if (this.tab === 'furniture') {
       if (this.furniture.handleMouseDown(x, y)) e.preventDefault();
     } else if (this.tab === 'characters') {
       this.pickResident(x, y);
@@ -604,7 +794,10 @@ export class Editor {
   private onMouseMove(e: MouseEvent) {
     const { x, y } = this.toWorld(e);
 
-    if (this.tab === 'furniture') {
+    if (this.tab === 'world' && this.painting) {
+      this.paintTile(x, y);
+      e.preventDefault();
+    } else if (this.tab === 'furniture') {
       this.furniture.handleMouseMove(x, y);
       e.preventDefault();
     } else if (this.tab === 'behavior' && this.draggingAnchor && this.selAnchorPiece) {
@@ -620,7 +813,9 @@ export class Editor {
 
   private onMouseUp(_e: MouseEvent) {
     if (this.tab === 'furniture') this.furniture.handleMouseUp();
+    this.painting = false;
     this.draggingAnchor = false;
+    this.commitAction();
   }
 
   private pickResident(wx: number, wy: number) {
@@ -675,6 +870,8 @@ export class Editor {
         this.canvas.addEventListener('mousemove', this.onMouseMove);
         this.canvas.addEventListener('mouseup', this.onMouseUp);
       } else {
+        this.furniture.save();
+        this.saveScene();
         if (this.panel) this.panel.style.display = 'none';
         this.canvas.removeEventListener('mousedown', this.onMouseDown);
         this.canvas.removeEventListener('mousemove', this.onMouseMove);
@@ -688,6 +885,18 @@ export class Editor {
 
     if (!this.active) return;
 
+    // Undo / Redo — Ctrl+Z / Ctrl+Shift+Z (or Cmd on Mac)
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+      e.preventDefault();
+      this.undo();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && ((e.key === 'z' && e.shiftKey) || e.key === 'y')) {
+      e.preventDefault();
+      this.redo();
+      return;
+    }
+
     // Global save — works on any tab
     if (e.key === 's' || e.key === 'S') {
       this.furniture.save();
@@ -695,11 +904,15 @@ export class Editor {
       return;
     }
 
-    // Tab-specific keys
+    // Tab-specific keys (wrapped in undo)
     if (this.tab === 'furniture') {
+      this.beginAction();
       this.furniture.handleKey(e);
+      this.commitAction();
     } else if (this.tab === 'behavior') {
+      this.beginAction();
       this.handleBehaviorKey(e);
+      this.commitAction();
     }
   }
 
@@ -731,6 +944,101 @@ export class Editor {
     }
   }
 
+  // --- Undo / Redo ---
+
+  private captureState(): string {
+    const characters: Record<string, string> = {};
+    for (const r of this.mv.getResidents()) {
+      characters[r.agentId] = r.getHomePosition();
+    }
+    const { cols, rows } = this.mv.getGridSize();
+    return JSON.stringify({
+      gridCols: cols,
+      gridRows: rows,
+      floor: this.mv.getFloorLayer(),
+      furniture: this.furniture.getLayout(),
+      characters,
+      wanderPoints: this.furniture.wanderPoints,
+    });
+  }
+
+  private restoreState(snapshot: string) {
+    const s = JSON.parse(snapshot);
+
+    // Resize grid if needed
+    const { cols, rows } = this.mv.getGridSize();
+    if (s.gridCols !== cols || s.gridRows !== rows) {
+      this.mv.resizeGrid(s.gridCols, s.gridRows);
+    }
+
+    // Restore floor
+    if (s.floor) {
+      const floor = this.mv.getFloorLayer();
+      for (let r = 0; r < s.floor.length && r < floor.length; r++) {
+        for (let c = 0; c < s.floor[r].length && c < floor[r].length; c++) {
+          floor[r][c] = s.floor[r][c];
+        }
+      }
+    }
+
+    // Restore furniture
+    this.furniture.setLayout(s.furniture ?? []);
+    if (s.wanderPoints) this.furniture.setWanderPoints(s.wanderPoints);
+
+    // Restore characters
+    if (s.characters) {
+      for (const r of this.mv.getResidents()) {
+        if (s.characters[r.agentId]) r.setHomePosition(s.characters[r.agentId]);
+      }
+    }
+
+    // Clear selection state
+    this.furniture.selected = null;
+    this.selAnchorPiece = null;
+    this.selAnchorIdx = -1;
+    this.charsBuiltFor = null;
+
+    // Refresh UI
+    if (this.gridLabel) {
+      const sz = this.mv.getGridSize();
+      this.gridLabel.textContent = `Grid: ${sz.cols}×${sz.rows}`;
+    }
+    this.buildTabContent();
+  }
+
+  /** Call before an action to prepare for undo */
+  private beginAction() {
+    this.preActionSnapshot = this.captureState();
+  }
+
+  /** Call after an action completes to push undo state */
+  private commitAction() {
+    if (!this.preActionSnapshot) return;
+    const current = this.captureState();
+    if (current === this.preActionSnapshot) {
+      this.preActionSnapshot = null;
+      return; // no change
+    }
+    this.undoStack.push(this.preActionSnapshot);
+    if (this.undoStack.length > this.maxHistory) this.undoStack.shift();
+    this.redoStack.length = 0; // clear redo on new action
+    this.preActionSnapshot = null;
+  }
+
+  private undo() {
+    if (this.undoStack.length === 0) return;
+    this.redoStack.push(this.captureState());
+    this.restoreState(this.undoStack.pop()!);
+    console.log(`[editor] Undo (${this.undoStack.length} left)`);
+  }
+
+  private redo() {
+    if (this.redoStack.length === 0) return;
+    this.undoStack.push(this.captureState());
+    this.restoreState(this.redoStack.pop()!);
+    console.log(`[editor] Redo (${this.redoStack.length} left)`);
+  }
+
   // --- Scene persistence ---
 
   private saveCharacterAssignments() {
@@ -742,7 +1050,11 @@ export class Editor {
     for (const r of this.mv.getResidents()) {
       characters[r.agentId] = r.getHomePosition();
     }
+    const { cols, rows } = this.mv.getGridSize();
     const scene = {
+      gridCols: cols,
+      gridRows: rows,
+      floor: this.mv.getFloorLayer(),
       furniture: this.furniture.getLayout(),
       characters,
       wanderPoints: this.furniture.wanderPoints,
@@ -771,6 +1083,31 @@ export class Editor {
         r.setHomePosition(assignments[r.agentId]);
       }
     }
+  }
+
+  // --- Grid resize ---
+
+  private gridLabel: HTMLElement | null = null;
+
+  private resizeGrid(dc: number, dr: number) {
+    const { cols, rows } = this.mv.getGridSize();
+    this.mv.resizeGrid(cols + dc, rows + dr);
+    if (this.gridLabel) {
+      const s = this.mv.getGridSize();
+      this.gridLabel.textContent = `Grid: ${s.cols}×${s.rows}`;
+    }
+  }
+
+  private makeBtn(label: string, onClick: () => void): HTMLElement {
+    const btn = this.el('div', `
+      padding:2px 5px; border:1px solid #444; border-radius:2px;
+      cursor:pointer; font-size:9px; color:#ccc; background:#222;
+    `);
+    btn.textContent = label;
+    btn.addEventListener('mouseenter', () => { btn.style.borderColor = '#00ff88'; });
+    btn.addEventListener('mouseleave', () => { btn.style.borderColor = '#444'; });
+    btn.addEventListener('click', onClick);
+    return btn;
   }
 
   // --- Helpers ---

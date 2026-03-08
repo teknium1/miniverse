@@ -75,6 +75,14 @@ export class Renderer {
     }
   }
 
+  resize(width: number, height: number) {
+    this.canvas.width = width;
+    this.canvas.height = height;
+    this.canvas.style.width = `${width * this.scale}px`;
+    this.canvas.style.height = `${height * this.scale}px`;
+    this.ctx.imageSmoothingEnabled = false;
+  }
+
   getScale(): number {
     return this.scale;
   }

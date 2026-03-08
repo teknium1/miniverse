@@ -6,7 +6,7 @@
 import { buildPrompt, type SheetType } from './prompt.js';
 import { generate, downloadImage } from './fal.js';
 import { removeBg, removeBgUrl } from './background.js';
-import { processCharacterSheet, processFurnitureSheet } from './process.js';
+import { processCharacterSheet, processFurnitureSheet, processTexture, assembleTileset } from './process.js';
 import sharp from 'sharp';
 import { writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
@@ -181,6 +181,86 @@ export async function generateObject(options: GenerateObjectOptions): Promise<Ge
   }
 
   return { buffer: trimmed.data, width: trimmed.info.width, height: trimmed.info.height };
+}
+
+export interface GenerateTextureOptions {
+  /** Texture description, e.g. "wooden floor planks" or "stone wall bricks" */
+  prompt: string;
+  /** Optional reference image */
+  refImage?: string;
+  /** Output file path (PNG) */
+  output?: string;
+  /** Tile size in pixels (default 32) */
+  size?: number;
+}
+
+export interface GenerateTextureResult {
+  /** Clean tile PNG buffer */
+  buffer: Buffer;
+  /** Output path if written to disk */
+  outputPath?: string;
+}
+
+export async function generateTexture(options: GenerateTextureOptions): Promise<GenerateTextureResult> {
+  const fullPrompt = buildPrompt(options.prompt, 'texture');
+  console.log('Generating texture...');
+
+  const { imageUrl } = await generate({
+    prompt: fullPrompt,
+    refImage: options.refImage,
+  });
+
+  // No bg removal — textures are opaque
+  console.log('Downloading...');
+  const imageBuffer = await downloadImage(imageUrl);
+
+  console.log('Processing tile...');
+  const result = await processTexture(imageBuffer, options.size ?? 32);
+
+  if (options.output) {
+    mkdirSync(path.dirname(options.output), { recursive: true });
+    writeFileSync(options.output, result);
+    console.log(`Saved: ${options.output}`);
+    return { buffer: result, outputPath: options.output };
+  }
+
+  return { buffer: result };
+}
+
+export interface AssembleTilesetOptions {
+  /** Ordered list of tile PNG paths */
+  tiles: string[];
+  /** Output file path */
+  output: string;
+  /** Tile size in pixels (default 32) */
+  size?: number;
+  /** Columns per row (default 16) */
+  columns?: number;
+}
+
+export interface AssembleTilesetResult {
+  buffer: Buffer;
+  outputPath: string;
+  tileCount: number;
+  columns: number;
+}
+
+export async function buildTileset(options: AssembleTilesetOptions): Promise<AssembleTilesetResult> {
+  const size = options.size ?? 32;
+  const columns = options.columns ?? 16;
+
+  console.log(`Assembling ${options.tiles.length} tiles into tileset...`);
+  const tileBuffers = await Promise.all(
+    options.tiles.map(t => sharp(t).png().toBuffer()),
+  );
+
+  const result = await assembleTileset(tileBuffers, size, columns);
+
+  mkdirSync(path.dirname(options.output), { recursive: true });
+  writeFileSync(options.output, result);
+  console.log(`Saved: ${options.output} (${options.tiles.length} tiles, ${columns} columns)`);
+
+  return { buffer: result, outputPath: options.output, tileCount: options.tiles.length, columns };
 }
 
 /**

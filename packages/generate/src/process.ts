@@ -205,6 +205,66 @@ export async function processFurnitureSheet(input: Buffer): Promise<{ buffer: Bu
 }
 
 /**
+ * Process a raw texture into a clean 32x32 seamless tile.
+ * 1. Crop to center square
+ * 2. Resize to 32x32 with nearest-neighbor
+ */
+export async function processTexture(input: Buffer, size = 32): Promise<Buffer> {
+  const meta = await sharp(input).metadata();
+  const w = meta.width!, h = meta.height!;
+
+  // Crop inner 60% to avoid any border/frame artifacts from generation
+  const side = Math.min(w, h);
+  const cropSize = Math.floor(side * 0.6);
+  const left = Math.floor((w - cropSize) / 2);
+  const top = Math.floor((h - cropSize) / 2);
+
+  return sharp(input)
+    .extract({ left, top, width: cropSize, height: cropSize })
+    .resize(size, size, { kernel: sharp.kernel.nearest })
+    .png()
+    .toBuffer();
+}
+
+/**
+ * Assemble individual tile PNGs into a tileset atlas.
+ * Layout: single row of tiles, each `size`x`size`.
+ * Columns param controls how many tiles per row (default 16).
+ */
+export async function assembleTileset(
+  tiles: Buffer[],
+  size = 32,
+  columns = 16,
+): Promise<Buffer> {
+  const rows = Math.ceil(tiles.length / columns);
+  const width = columns * size;
+  const height = rows * size;
+
+  const composites = await Promise.all(
+    tiles.map(async (buf, i) => ({
+      input: await sharp(buf)
+        .resize(size, size, { kernel: sharp.kernel.nearest })
+        .png()
+        .toBuffer(),
+      left: (i % columns) * size,
+      top: Math.floor(i / columns) * size,
+    })),
+  );
+
+  return sharp({
+    create: {
+      width,
+      height,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    },
+  })
+    .composite(composites)
+    .png()
+    .toBuffer();
+}
+
+/**
  * Flood fill from image edges to remove white background.
  * Preserves white pixels inside objects (e.g. whiteboard surface).
  */

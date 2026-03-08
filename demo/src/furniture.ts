@@ -88,6 +88,7 @@ export class FurnitureSystem {
   private dragOffsetX = 0;
   private dragOffsetY = 0;
   private onSaveCallback: (() => void) | null = null;
+  private deadspaceCheck: ((col: number, row: number) => boolean) | null = null;
 
   constructor(tileSize: number, scale: number) {
     this.tileSize = tileSize;
@@ -155,6 +156,37 @@ export class FurnitureSystem {
 
   onSave(callback: () => void) { this.onSaveCallback = callback; }
 
+  /** Register a callback to check if a tile is deadspace */
+  setDeadspaceCheck(check: (col: number, row: number) => boolean) {
+    this.deadspaceCheck = check;
+  }
+
+  /** Check if any furniture piece occupies a given tile */
+  occupiesTile(col: number, row: number): boolean {
+    for (const p of this.pieces) {
+      if (col >= Math.floor(p.x) && col < Math.ceil(p.x + p.w) &&
+          row >= Math.floor(p.y) && row < Math.ceil(p.y + p.h)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Check if a piece's bounds overlap any deadspace tiles */
+  private overlapsDeadspace(x: number, y: number, w: number, h: number): boolean {
+    if (!this.deadspaceCheck) return false;
+    const x0 = Math.floor(x);
+    const y0 = Math.floor(y);
+    const x1 = Math.ceil(x + w);
+    const y1 = Math.ceil(y + h);
+    for (let r = y0; r < y1; r++) {
+      for (let c = x0; c < x1; c++) {
+        if (this.deadspaceCheck(c, r)) return true;
+      }
+    }
+    return false;
+  }
+
   /** Returns tile coords blocked by furniture bounds */
   getBlockedTiles(): Set<string> {
     const blocked = new Set<string>();
@@ -187,10 +219,24 @@ export class FurnitureSystem {
     const aspect = img.naturalWidth / img.naturalHeight;
     const h = 2;
     const w = Math.round(h * aspect * 10) / 10;
+
+    // Find a valid placement spot (skip deadspace)
+    let px = 6, py = 5;
+    if (this.overlapsDeadspace(px, py, w, h)) {
+      let found = false;
+      for (let r = 1; r < 20 && !found; r++) {
+        for (let c = 1; c < 20 && !found; c++) {
+          if (!this.overlapsDeadspace(c, r, w, h)) {
+            px = c; py = r; found = true;
+          }
+        }
+      }
+    }
+
     const index = this.pieces.length;
     const piece: LoadedPiece = {
       id, img,
-      x: 6, y: 5,
+      x: px, y: py,
       w, h,
       layer: id === 'chair' ? 'above' : 'below',
       anchors: autoAnchors({ id, x: 6, y: 5, w, h, layer: 'below' }, index),
@@ -243,8 +289,14 @@ export class FurnitureSystem {
   handleMouseMove(wx: number, wy: number) {
     if (!this.dragging || !this.selected) return;
     const T = this.tileSize;
-    this.selected.x = this.snap((wx - this.dragOffsetX) / T);
-    this.selected.y = this.snap((wy - this.dragOffsetY) / T);
+    const newX = this.snap((wx - this.dragOffsetX) / T);
+    const newY = this.snap((wy - this.dragOffsetY) / T);
+
+    // Don't allow dragging into deadspace
+    if (this.overlapsDeadspace(newX, newY, this.selected.w, this.selected.h)) return;
+
+    this.selected.x = newX;
+    this.selected.y = newY;
   }
 
   handleMouseUp() { this.dragging = false; }
@@ -264,10 +316,16 @@ export class FurnitureSystem {
 
     if (this.selected && e.key.startsWith('Arrow')) {
       const step = e.shiftKey ? 1 : 0.25;
-      if (e.key === 'ArrowLeft') this.selected.x -= step;
-      if (e.key === 'ArrowRight') this.selected.x += step;
-      if (e.key === 'ArrowUp') this.selected.y -= step;
-      if (e.key === 'ArrowDown') this.selected.y += step;
+      const s = this.selected;
+      let nx = s.x, ny = s.y;
+      if (e.key === 'ArrowLeft') nx -= step;
+      if (e.key === 'ArrowRight') nx += step;
+      if (e.key === 'ArrowUp') ny -= step;
+      if (e.key === 'ArrowDown') ny += step;
+      if (!this.overlapsDeadspace(nx, ny, s.w, s.h)) {
+        s.x = nx;
+        s.y = ny;
+      }
       e.preventDefault();
       return true;
     }

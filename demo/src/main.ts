@@ -1,6 +1,5 @@
 import { Miniverse } from 'miniverse';
 import type { AgentState, AgentStatus, SceneConfig, SpriteSheetConfig } from 'miniverse';
-import { generateTileset } from './generateAssets';
 import { FurnitureSystem } from './furniture';
 import { Editor } from './editor';
 
@@ -34,9 +33,7 @@ function mockAgentData(): AgentStatus[] {
 }
 
 // Build the scene config
-function buildSceneConfig(): SceneConfig {
-  const cols = 16;
-  const rows = 12;
+function buildSceneConfig(cols = 16, rows = 12, savedFloor?: number[][]): SceneConfig {
 
   const floor: number[][] = [];
   const walkable: boolean[][] = [];
@@ -45,13 +42,15 @@ function buildSceneConfig(): SceneConfig {
     floor[r] = [];
     walkable[r] = [];
     for (let c = 0; c < cols; c++) {
-      if (r === 0 || r === rows - 1 || c === 0 || c === cols - 1) {
+      // Use saved floor data if available, otherwise default walls on edges
+      if (savedFloor && savedFloor[r] && savedFloor[r][c] !== undefined) {
+        floor[r][c] = savedFloor[r][c];
+      } else if (r === 0 || r === rows - 1 || c === 0 || c === cols - 1) {
         floor[r][c] = 1;
-        walkable[r][c] = false;
       } else {
         floor[r][c] = 0;
-        walkable[r][c] = true;
       }
+      walkable[r][c] = floor[r][c] >= 0 && !(r === 0 || r === rows - 1 || c === 0 || c === cols - 1);
     }
   }
 
@@ -74,7 +73,7 @@ function buildSceneConfig(): SceneConfig {
       lounge: { x: 5, y: 8, label: 'Lounge' },
     },
     tilesets: [{
-      image: 'tilesets/office.png',
+      image: '/tilesets/office.png',
       tileWidth: 32,
       tileHeight: 32,
       columns: 16,
@@ -86,14 +85,6 @@ async function main() {
   const container = document.getElementById('miniverse-container')!;
   const tooltip = document.getElementById('tooltip')!;
   const statusBar = document.getElementById('status-bar')!;
-
-  // Generate placeholder tileset, use real sprites for all characters
-  const tilesetUrl = await generateTileset();
-
-  const sceneConfig = buildSceneConfig();
-
-  // Override tileset URL to use generated blob
-  sceneConfig.tilesets[0].image = tilesetUrl;
 
   // Build sprite config for each character: walk sheet + action sheet
   function charSprites(name: string): SpriteSheetConfig {
@@ -127,8 +118,14 @@ async function main() {
     rio: charSprites('rio'),
   };
 
-  // Load scene data (furniture + characters + wander points)
+  // Load scene data (furniture + characters + wander points + grid size)
   const sceneData = await fetch('/scene.json').then(r => r.json()).catch(() => null);
+
+  const gridCols = sceneData?.gridCols ?? 16;
+  const gridRows = sceneData?.gridRows ?? 12;
+  const sceneConfig = buildSceneConfig(gridCols, gridRows, sceneData?.floor);
+
+  const tileSize = 32;
 
   const mv = new Miniverse({
     container,
@@ -146,8 +143,8 @@ async function main() {
       { agentId: 'rio', name: 'Rio', sprite: 'rio', position: sceneData?.characters?.rio ?? 'couch_5_0' },
     ],
     scale: 2,
-    width: 512,
-    height: 384,
+    width: gridCols * tileSize,
+    height: gridRows * tileSize,
     sceneConfig,
     spriteSheets,
     objects: [],
@@ -199,6 +196,12 @@ async function main() {
   if (sceneData?.wanderPoints) {
     furniture.setWanderPoints(sceneData.wanderPoints);
   }
+
+  // Let furniture system check deadspace tiles
+  furniture.setDeadspaceCheck((col, row) => {
+    const floor = mv.getFloorLayer();
+    return floor?.[row]?.[col] < 0;
+  });
 
   // Set typed locations + walkability BEFORE start so residents can find their anchors
   const syncFurniture = () => {
