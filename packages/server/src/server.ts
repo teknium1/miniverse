@@ -532,6 +532,18 @@ export class MiniverseServer {
     }
   }
 
+  private getDefaultWorldId(): string | null {
+    const publicDir = this.publicDir ?? './public';
+    const worldsDir = path.join(publicDir, 'worlds');
+    if (!existsSync(worldsDir)) return null;
+    try {
+      const dirs = readdirSync(worldsDir).filter(d => {
+        return existsSync(path.join(worldsDir, d, 'world.json'));
+      });
+      return dirs[0] ?? null;
+    } catch { return null; }
+  }
+
   private loadWorldData(worldId: string): unknown | null {
     if (this.worldCache.has(worldId)) return this.worldCache.get(worldId);
     const publicDir = this.publicDir ?? './public';
@@ -564,6 +576,22 @@ export class MiniverseServer {
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(getFrontendHtml(this.port));
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/info') {
+      const agents = this.store.getPublicList();
+      const online = agents.filter((a: any) => a.state !== 'offline').length;
+      const worldId = this.getDefaultWorldId();
+      const world = worldId ? this.readWorld(worldId) : null;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        miniverse: true,
+        version: '0.2.6',
+        agents: { online, total: agents.length },
+        world: worldId ?? null,
+        grid: world ? { cols: world.gridCols ?? 16, rows: world.gridRows ?? 12 } : null,
+      }));
       return;
     }
 
