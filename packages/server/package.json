@@ -1,6 +1,6 @@
 {
   "name": "@miniverse/server",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Local server for Miniverse — ingest API, WebSocket, and web frontend",
   "type": "module",
   "main": "dist/index.js",

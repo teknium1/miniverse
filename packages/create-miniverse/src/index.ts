@@ -224,6 +224,8 @@ async function main() {
   mkdirSync(projectDir, { recursive: true });
   mkdirSync(path.join(projectDir, 'src'), { recursive: true });
   mkdirSync(path.join(projectDir, 'public', 'universal_assets', 'citizens'), { recursive: true });
+  mkdirSync(path.join(projectDir, 'public', 'universal_assets', 'tiles'), { recursive: true });
+  mkdirSync(path.join(projectDir, 'public', 'universal_assets', 'props'), { recursive: true });
   mkdirSync(path.join(projectDir, 'public', 'worlds'), { recursive: true });
 
   // Use file: paths only when MINIVERSE_DEV is set (for local monorepo development)
@@ -376,17 +378,25 @@ async function main() {
 
   s.stop('World ready');
 
-  s.start('Copying sprites...');
+  s.start('Copying assets...');
 
-  // Copy character sprites
-  const demoSpritesDir = path.resolve(__dirname, '..', '..', '..', 'demo', 'public', 'universal_assets', 'citizens');
-  const targetSpritesDir = path.join(projectDir, 'public', 'universal_assets', 'citizens');
+  // Copy universal assets (citizens, tiles, props)
+  const demoUniversalDir = path.resolve(__dirname, '..', '..', '..', 'demo', 'public', 'universal_assets');
+  const templateUniversalDir = path.join(TEMPLATES, 'universal_assets');
+  const targetUniversalDir = path.join(projectDir, 'public', 'universal_assets');
 
-  for (const spriteName of SPRITES) {
-    for (const suffix of ['_walk.png', '_actions.png']) {
-      const src = path.join(demoSpritesDir, spriteName + suffix);
-      if (existsSync(src)) {
-        copyFileSync(src, path.join(targetSpritesDir, spriteName + suffix));
+  for (const assetType of ['citizens', 'tiles', 'props']) {
+    // Try demo dir first (monorepo), then templates dir (npm)
+    const sourceDir = existsSync(path.join(demoUniversalDir, assetType))
+      ? path.join(demoUniversalDir, assetType)
+      : path.join(templateUniversalDir, assetType);
+
+    if (existsSync(sourceDir)) {
+      const targetDir = path.join(targetUniversalDir, assetType);
+      for (const file of readdirSync(sourceDir)) {
+        if (file.endsWith('.png')) {
+          copyFileSync(path.join(sourceDir, file), path.join(targetDir, file));
+        }
       }
     }
   }

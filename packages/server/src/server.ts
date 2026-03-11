@@ -625,7 +625,7 @@ export class MiniverseServer {
 
     // --- Webhook registration ---
     if (req.method === 'POST' && url.pathname === '/api/webhook') {
-      const body = await this.readBody(req);
+      const body = await readBody(req);
       const { agent, url: callbackUrl } = JSON.parse(body);
       if (!agent || !callbackUrl) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
