@@ -4,7 +4,8 @@
 
 Your agents are doing real work. Give them a place to live.
 
----
+https://github.com/user-attachments/assets/f567347c-9deb-4f6c-8393-b46d0cc0ec0e
+
 
 ## What Is This?
 
