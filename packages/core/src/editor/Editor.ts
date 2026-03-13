@@ -455,7 +455,7 @@ export class Editor {
     // Match panel height exactly to canvas
     const syncHeight = () => {
       const h = this.canvas.clientHeight || this.canvas.height;
-      this.panel.style.height = h + 'px';
+      if (this.panel) this.panel.style.height = h + 'px';
     };
     syncHeight();
     const ro = new ResizeObserver(syncHeight);

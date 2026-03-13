@@ -84,6 +84,10 @@ export class Citizen {
   energy = 1;
   visible = true;
 
+  /** Separation steering offset (pixels), applied during rendering */
+  separationX = 0;
+  separationY = 0;
+
   private path: { x: number; y: number }[] = [];
   private pathIndex = 0;
   private moveSpeed = 2; // tiles per second
@@ -421,9 +425,8 @@ export class Citizen {
 
     // Fallback to plain locations — respect reservations
     const locationNames = Object.keys(locations).sort(() => Math.random() - 0.5);
-    if (locationNames.length === 0) return;
-
     const tile = this.getTilePosition();
+
     for (const target of locationNames) {
       const loc = locations[target];
       if (reservation && !reservation.isAvailable(loc.x, loc.y, this.agentId)) continue;
@@ -432,6 +435,35 @@ export class Citizen {
         if (reservation) {
           reservation.release(this.agentId);
           reservation.reserve(loc.x, loc.y, this.agentId);
+        }
+        this.walkTo(path);
+        return;
+      }
+    }
+
+    // Last resort: walk to a random walkable tile
+    this.walkToRandomTile(pathfinder, reservation);
+  }
+
+  /** Pick a random walkable tile and walk there */
+  walkToRandomTile(pathfinder: Pathfinder, reservation?: TileReservation) {
+    const tile = this.getTilePosition();
+    const walkable = pathfinder.getWalkableTiles();
+    if (walkable.length === 0) return;
+
+    // Shuffle and try a few random tiles (don't iterate all)
+    const attempts = Math.min(10, walkable.length);
+    for (let i = 0; i < attempts; i++) {
+      const idx = Math.floor(Math.random() * walkable.length);
+      const target = walkable[idx];
+      // Skip tiles too close (at least 2 tiles away)
+      if (Math.abs(target.x - tile.x) + Math.abs(target.y - tile.y) < 2) continue;
+      if (reservation && !reservation.isAvailable(target.x, target.y, this.agentId)) continue;
+      const path = pathfinder.findPath(tile.x, tile.y, target.x, target.y);
+      if (path.length > 1) {
+        if (reservation) {
+          reservation.release(this.agentId);
+          reservation.reserve(target.x, target.y, this.agentId);
         }
         this.walkTo(path);
         return;
@@ -446,17 +478,75 @@ export class Citizen {
       : 0;
   }
 
+  /** Whether this citizen is anchored (sitting) and should not be pushed by separation */
+  isAnchored(): boolean {
+    return this.state === 'working' || this.state === 'sleeping';
+  }
+
+  /**
+   * Apply separation steering: push away from nearby citizens.
+   * Call once per frame from the update loop, passing all other citizens.
+   */
+  applySeparation(others: Citizen[], delta: number) {
+    // Don't apply separation to sitting/working citizens
+    if (this.isAnchored() || !this.visible) return;
+
+    const minDist = this.tileWidth * 1.5; // separation radius in pixels
+    let pushX = 0;
+    let pushY = 0;
+
+    for (const other of others) {
+      if (other === this || !other.visible) continue;
+
+      const dx = this.x - other.x;
+      const dy = this.y - other.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist < minDist && dist > 0.01) {
+        // Stronger push the closer they are
+        const strength = (minDist - dist) / minDist;
+        pushX += (dx / dist) * strength;
+        pushY += (dy / dist) * strength;
+      } else if (dist <= 0.01) {
+        // Exactly overlapping — push in a random direction
+        const angle = Math.random() * Math.PI * 2;
+        pushX += Math.cos(angle) * 0.5;
+        pushY += Math.sin(angle) * 0.5;
+      }
+    }
+
+    // Smooth the separation offset (lerp towards target)
+    const speed = 60 * delta; // pixels/sec responsiveness
+    this.separationX += pushX * speed;
+    this.separationY += pushY * speed;
+
+    // Decay the offset over time so it doesn't accumulate forever
+    const decay = 0.9;
+    this.separationX *= decay;
+    this.separationY *= decay;
+
+    // Clamp to max offset (half a tile)
+    const maxOffset = this.tileWidth * 0.5;
+    this.separationX = Math.max(-maxOffset, Math.min(maxOffset, this.separationX));
+    this.separationY = Math.max(-maxOffset, Math.min(maxOffset, this.separationY));
+  }
+
   draw(ctx: CanvasRenderingContext2D) {
     if (!this.visible) return;
 
-    const drawX = this.x + (this.tileWidth - this.frameWidth) / 2;
-    const drawY = this.y + (this.tileHeight - this.frameHeight) - this.getSittingOffset();
+    // Apply separation offset only for non-anchored citizens
+    const sepX = this.isAnchored() ? 0 : this.separationX;
+    const sepY = this.isAnchored() ? 0 : this.separationY;
+    const drawX = this.x + (this.tileWidth - this.frameWidth) / 2 + sepX;
+    const drawY = this.y + (this.tileHeight - this.frameHeight) - this.getSittingOffset() + sepY;
     this.animator.draw(ctx, drawX, drawY);
   }
 
   containsPoint(px: number, py: number): boolean {
-    const drawX = this.x + (this.tileWidth - this.frameWidth) / 2;
-    const drawY = this.y + (this.tileHeight - this.frameHeight);
+    const sepX = this.isAnchored() ? 0 : this.separationX;
+    const sepY = this.isAnchored() ? 0 : this.separationY;
+    const drawX = this.x + (this.tileWidth - this.frameWidth) / 2 + sepX;
+    const drawY = this.y + (this.tileHeight - this.frameHeight) + sepY;
     return (
       px >= drawX &&
       px <= drawX + this.frameWidth &&

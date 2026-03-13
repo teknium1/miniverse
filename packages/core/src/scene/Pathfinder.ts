@@ -77,6 +77,20 @@ export class Pathfinder {
     return x >= 0 && y >= 0 && y < this.height && x < this.width && this.grid[y][x];
   }
 
+  /** Returns all walkable tile coordinates (cached after first call) */
+  private walkableCache: { x: number; y: number }[] | null = null;
+  getWalkableTiles(): { x: number; y: number }[] {
+    if (this.walkableCache) return this.walkableCache;
+    const tiles: { x: number; y: number }[] = [];
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        if (this.grid[y][x]) tiles.push({ x, y });
+      }
+    }
+    this.walkableCache = tiles;
+    return tiles;
+  }
+
   private heuristic(ax: number, ay: number, bx: number, by: number): number {
     return Math.abs(ax - bx) + Math.abs(ay - by);
   }

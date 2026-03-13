@@ -151,6 +151,7 @@ export class Miniverse {
         for (const citizen of this.citizens) {
           const otherHomes = this.getOtherHomeAnchors(citizen.agentId);
           citizen.update(delta, this.scene.pathfinder, locations, this.typedLocations, this.reservation, otherHomes);
+          citizen.applySeparation(this.citizens, delta);
           this.updateCitizenEffects(citizen, delta);
         }
       },
@@ -585,16 +586,38 @@ export class Miniverse {
     // Pick an unreserved wander point as the spawn position
     const wanderPoints = this.typedLocations.filter(l => l.type === 'wander');
     const shuffled = [...wanderPoints].sort(() => Math.random() - 0.5);
-    const spawnLoc = shuffled.find(l => this.reservation.isAvailable(l.x, l.y, agent.id))
-      ?? shuffled[0]
-      ?? this.typedLocations[0];
-    const position = spawnLoc?.name ?? 'center';
+    let spawnLoc: TypedLocation | null = shuffled.find(l => this.reservation.isAvailable(l.x, l.y, agent.id))
+      ?? shuffled[0] ?? null;
+
+    // Fallback: if no wander points, try any typed location
+    if (!spawnLoc && this.typedLocations.length > 0) {
+      const anyShuffled = [...this.typedLocations].sort(() => Math.random() - 0.5);
+      spawnLoc = anyShuffled.find(l => this.reservation.isAvailable(l.x, l.y, agent.id)) ?? null;
+    }
+
+    // Last resort: pick a random walkable tile
+    let spawnPosition: string;
     if (spawnLoc) {
+      spawnPosition = spawnLoc.name;
       this.reservation.reserve(spawnLoc.x, spawnLoc.y, agent.id);
+    } else {
+      // Find a random walkable tile that isn't reserved
+      const walkable = this.scene.pathfinder.getWalkableTiles();
+      const candidates = walkable.sort(() => Math.random() - 0.5);
+      const tile = candidates.find(t => this.reservation.isAvailable(t.x, t.y, agent.id))
+        ?? candidates[0];
+      if (tile) {
+        // Create a dynamic position name and reserve it
+        spawnPosition = `_spawn_${tile.x}_${tile.y}`;
+        this.scene.config.locations[spawnPosition] = { x: tile.x, y: tile.y, label: spawnPosition };
+        this.reservation.reserve(tile.x, tile.y, agent.id);
+      } else {
+        spawnPosition = 'center';
+      }
     }
 
     this.spawningAgents.add(agent.id);
-    this.addCitizen({ agentId: agent.id, name: agent.name, sprite, position })
+    this.addCitizen({ agentId: agent.id, name: agent.name, sprite, position: spawnPosition })
       .then((citizen) => {
         citizen.updateState(agent.state, agent.task, agent.energy);
       })
