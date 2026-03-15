@@ -13,12 +13,23 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
       min-height: 100vh;
-      gap: 16px;
+      gap: 12px;
+      padding: 16px;
     }
     h1 { font-size: 20px; color: #e94560; letter-spacing: 4px; text-transform: uppercase; }
-    .subtitle { font-size: 12px; color: #666; margin-bottom: 8px; }
+    .subtitle { font-size: 12px; color: #666; }
+
+    /* Main layout: world + chat side by side */
+    #main-layout {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      max-width: 1400px;
+      width: 100%;
+      justify-content: center;
+    }
+
     #miniverse-container {
       border: 2px solid #333;
       border-radius: 4px;
@@ -26,12 +37,140 @@
       background: #0f0f23;
       display: inline-block;
       line-height: 0;
-      transition: border-color 0.15s, border-radius 0.15s;
+      flex-shrink: 0;
     }
-    #editor-wrapper #miniverse-container {
-      border-color: #00ff88;
-      border-radius: 4px 0 0 4px;
+
+    /* Chat panel */
+    #chat-panel {
+      width: 500px;
+      max-height: 700px;
+      display: flex;
+      flex-direction: column;
+      background: #16213e;
+      border: 1px solid #333;
+      border-radius: 6px;
+      overflow: hidden;
+      flex-shrink: 0;
     }
+    #chat-header {
+      padding: 10px 14px;
+      background: #1a1a2e;
+      border-bottom: 1px solid #333;
+      font-size: 13px;
+      color: #e94560;
+      font-weight: bold;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #chat-header .dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; display: inline-block; }
+    #chat-feed {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-height: 450px;
+      max-height: 580px;
+    }
+    .chat-msg {
+      font-size: 12px;
+      line-height: 1.5;
+      padding: 6px 10px;
+      border-radius: 6px;
+      max-width: 100%;
+      word-wrap: break-word;
+    }
+    .chat-msg.system { color: #555; font-style: italic; font-size: 10px; }
+    .chat-msg.agent {
+      background: #0f3460;
+      border-left: 3px solid #e94560;
+    }
+    .chat-msg.agent .sender { color: #e94560; font-weight: bold; font-size: 11px; }
+    .chat-msg.user {
+      background: #1a3a1a;
+      border-left: 3px solid #4ade80;
+    }
+    .chat-msg.user .sender { color: #4ade80; font-weight: bold; font-size: 11px; }
+    .chat-msg .text { color: #ddd; margin-top: 2px; }
+    .chat-msg .time { color: #444; font-size: 9px; float: right; }
+
+    /* Chat input area */
+    #chat-input-area {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 10px;
+      border-top: 1px solid #333;
+      background: #1a1a2e;
+    }
+    #chat-target {
+      display: flex;
+      gap: 6px;
+    }
+    #chat-target button {
+      flex: 1;
+      padding: 5px 8px;
+      background: #16213e;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #aaa;
+      font-family: inherit;
+      font-size: 10px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    #chat-target button.active {
+      border-color: #e94560;
+      color: #e94560;
+      background: #1a1a2e;
+    }
+    #chat-target button:hover { border-color: #666; }
+    #chat-input-row {
+      display: flex;
+      gap: 6px;
+    }
+    #chat-input {
+      flex: 1;
+      padding: 8px 10px;
+      background: #0f0f23;
+      border: 1px solid #333;
+      border-radius: 4px;
+      color: #eee;
+      font-family: inherit;
+      font-size: 12px;
+      outline: none;
+    }
+    #chat-input:focus { border-color: #e94560; }
+    #chat-input::placeholder { color: #444; }
+    #chat-send {
+      padding: 8px 14px;
+      background: #e94560;
+      border: none;
+      border-radius: 4px;
+      color: white;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    #chat-send:hover { background: #c73e54; }
+    #chat-send:disabled { background: #444; cursor: wait; }
+
+    /* Agent status bar */
+    .status-bar {
+      display: flex; gap: 16px; font-size: 11px; color: #555;
+    }
+    .status-bar .agent { display: flex; align-items: center; gap: 4px; }
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: #555; }
+    .status-dot.working { background: #4ade80; }
+    .status-dot.idle { background: #fbbf24; }
+    .status-dot.sleeping { background: #818cf8; }
+    .status-dot.thinking { background: #f472b6; }
+    .status-dot.error { background: #ef4444; }
+    .status-dot.speaking { background: #22d3ee; }
+
     #tooltip {
       position: fixed;
       background: rgba(0,0,0,0.85);
@@ -47,26 +186,37 @@
     #tooltip .name { color: #e94560; font-weight: bold; }
     #tooltip .state { color: #aaa; }
     #tooltip .task { color: #66aaff; }
-    .status-bar {
-      display: flex; gap: 16px; font-size: 11px; color: #555;
-    }
-    .status-bar .agent { display: flex; align-items: center; gap: 4px; }
-    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: #555; }
-    .status-dot.working { background: #4ade80; }
-    .status-dot.idle { background: #fbbf24; }
-    .status-dot.sleeping { background: #818cf8; }
-    .status-dot.thinking { background: #f472b6; }
-    .status-dot.error { background: #ef4444; }
-    .status-dot.speaking { background: #22d3ee; }
     .hint { font-size: 10px; color: #444; }
   </style>
 </head>
 <body>
-  <h1>my-miniverse</h1>
-  <p class="subtitle">powered by miniverse</p>
-  <div id="miniverse-container"></div>
-  <div class="status-bar" id="status-bar"></div>
-  <p class="hint">Press <b>E</b> to toggle editor</p>
+  <h1>Nous Research — Miniverse</h1>
+  <p class="subtitle">Hermes Agents living in a pixel world</p>
+
+  <div id="main-layout">
+    <div>
+      <div id="miniverse-container"></div>
+      <div class="status-bar" id="status-bar" style="margin-top:8px;justify-content:center;"></div>
+    </div>
+
+    <div id="chat-panel">
+      <div id="chat-header">
+        <span class="dot"></span> Agent Chat
+      </div>
+      <div id="chat-feed">
+        <div class="chat-msg system">Connecting to miniverse...</div>
+      </div>
+      <div id="chat-input-area">
+        <div id="chat-input-row">
+          <input type="text" id="chat-input" placeholder="Say something to the room..." />
+          <button id="chat-send">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="hint">Press <b>E</b> to toggle world editor | Click agents to see their status</p>
+
   <div id="tooltip">
     <div class="name"></div>
     <div class="state"></div>

@@ -70,7 +70,7 @@ async function main() {
 
   // Auto-discover agents from server and available sprites
   const availableSprites: string[] = await fetch('/api/citizens').then(r => r.json()).catch(() => ['morty', 'dexter', 'nova', 'rio']);
-  const serverAgents: { agent: string; name: string }[] = await fetch('http://localhost:4321/api/agents')
+  const serverAgents: { agent: string; name: string }[] = await fetch('/api/agents')
     .then(r => r.json())
     .then((d: any) => d.agents ?? [])
     .catch(() => []);
@@ -90,13 +90,17 @@ async function main() {
     });
   }
 
+  // Use dynamic WebSocket URL so it works through tunnels/proxies
+  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${wsProto}//${location.host}/ws`;
+
   const mv = new Miniverse({
     container,
     world: WORLD_ID,
     scene: 'main',
     signal: {
       type: 'websocket',
-      url: 'ws://localhost:4321/ws',
+      url: wsUrl,
     },
     citizens,
     scale: 2,
@@ -176,6 +180,188 @@ async function main() {
     tooltip.style.left = e.clientX + 12 + 'px';
     tooltip.style.top = e.clientY + 12 + 'px';
   });
+
+  // --- Chat Panel ---
+  const chatFeed = document.getElementById('chat-feed')!;
+  const chatInput = document.getElementById('chat-input') as HTMLInputElement;
+  const chatSend = document.getElementById('chat-send') as HTMLButtonElement;
+
+  // Agent name + color lookup
+  const agentNames: Record<string, string> = {};
+  const agentColors: Record<string, string> = { 'hermes-1': '#CD7F32', 'hermes-2': '#4ecdc4' };
+  for (const a of serverAgents) {
+    agentNames[a.agent] = a.name || a.agent;
+  }
+
+  // Filter list: agent IDs that we send to (exclude visitor / system)
+  const realAgentIds = serverAgents.map(a => a.agent).filter(id => id !== 'visitor');
+
+  function esc(s: string): string {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g, '<br>');
+  }
+
+  function stripNoise(text: string): string {
+    // Strip reasoning scratchpad
+    let s = text.replace(/<REASONING_SCRATCHPAD>[\s\S]*?<\/REASONING_SCRATCHPAD>/g, '');
+    // Strip markdown images
+    s = s.replace(/!\[.*?\]\(.*?\)/g, '');
+    // Strip tool output prefixes like "┊ tool_name: ..."
+    s = s.replace(/^[┊│]\s+\S+:.*$/gm, '');
+    // Strip zero-width and invisible characters
+    s = s.replace(/[\u200b\u200c\u200d\u2060\ufeff]/g, '');
+    return s.trim();
+  }
+
+  function addChat(type: 'agent' | 'user' | 'system', sender: string, text: string, color?: string) {
+    const clean = stripNoise(text);
+    if (!clean) return;
+
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const msg = document.createElement('div');
+    msg.className = `chat-msg ${type}`;
+
+    if (type === 'system') {
+      msg.textContent = `[${time}] ${clean}`;
+    } else {
+      const senderColor = color || (type === 'user' ? '#4ade80' : '#e94560');
+      msg.innerHTML =
+        `<span class="time">${time}</span>` +
+        `<div class="sender" style="color:${senderColor}">${esc(sender)}</div>` +
+        `<div class="text">${esc(clean)}</div>`;
+    }
+
+    chatFeed.appendChild(msg);
+    chatFeed.scrollTop = chatFeed.scrollHeight;
+    while (chatFeed.children.length > 200) chatFeed.removeChild(chatFeed.firstChild!);
+  }
+
+  // Register visitor + join lobby
+  fetch('/api/heartbeat', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent: 'visitor', name: 'You (Visitor)', state: 'idle', color: '#4ade80' }),
+  }).catch(() => {});
+  for (const id of [...realAgentIds, 'visitor']) {
+    fetch('/api/act', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: id, action: { type: 'join_channel', channel: 'lobby' } }),
+    }).catch(() => {});
+  }
+
+  // WebSocket for real-time world events — this is the PRIMARY way
+  // we see ALL agent activity: speaks, messages, status changes.
+  const chatWs = new WebSocket(`${wsUrl}`);
+  chatWs.onopen = () => addChat('system', '', 'Connected — type a message to talk to all agents');
+  chatWs.onclose = () => addChat('system', '', 'Disconnected from miniverse');
+  chatWs.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+
+      if (msg.type === 'event' && msg.event) {
+        const ev = msg.event;
+        const agentId = ev.agentId || '';
+        if (agentId === 'visitor') return; // skip our own echoes
+        const name = agentNames[agentId] || agentId;
+        const color = agentColors[agentId] || '#e94560';
+
+        // Speak events — contain full message text
+        if (ev.action?.type === 'speak' && ev.action.message) {
+          addChat('agent', name, ev.action.message, color);
+        }
+
+        // Status changes — show when agents start working/thinking
+        if (ev.action?.type === 'status') {
+          const state = ev.action.state || '';
+          const task = ev.action.task || '';
+          if (state === 'working' || state === 'thinking' || state === 'error') {
+            addChat('system', '', `${name}: ${state}${task ? ' — ' + task : ''}`);
+          }
+        }
+      }
+
+      // Update names and colors from agent list broadcasts
+      if (msg.type === 'agents' && Array.isArray(msg.agents)) {
+        for (const a of msg.agents) {
+          if (a.agent !== 'visitor') {
+            agentNames[a.agent] = a.name || a.agent;
+            if (a.color) agentColors[a.agent] = a.color;
+          }
+        }
+      }
+    } catch {}
+  };
+
+  // Send message to the room — fan out to each agent via webhook adapter
+  // and display full responses as they arrive
+  async function sendMessage() {
+    const text = chatInput.value.trim();
+    if (!text) return;
+
+    addChat('user', 'You', text);
+    chatInput.value = '';
+    chatSend.disabled = true;
+    chatSend.textContent = '⏳';
+
+    // Speak in world (visual only)
+    fetch('/api/act', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: 'visitor', action: { type: 'speak', message: text } }),
+    }).catch(() => {});
+
+    // Send to each agent in parallel via webhook adapter — get full responses
+    const promises = realAgentIds.map(async (agentId) => {
+      const name = agentNames[agentId] || agentId;
+      const color = agentColors[agentId] || '#e94560';
+      addChat('system', '', `${name} is thinking...`);
+
+      try {
+        const res = await fetch('/webhook/message', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: `${agentId}:room`,
+            message: text,
+            from: 'visitor',
+            user_id: 'visitor',
+          }),
+        });
+        const data = await res.json();
+        if (data.ok && data.response) {
+          // Display the full response directly (the speak event may also
+          // show it but speak can be truncated — this is the full text)
+          addChat('agent', name, data.response, color);
+          // Relay to lobby so the OTHER agent sees what this one said
+          fetch('/api/act', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              agent: agentId,
+              action: { type: 'message', channel: 'lobby', message: `[${name} responded]: ${data.response.slice(0, 800)}` },
+            }),
+          }).catch(() => {});
+        } else {
+          addChat('system', '', `${name}: ${data.error || 'No response'}`);
+        }
+      } catch (err) {
+        addChat('system', '', `${name} error: ${err}`);
+      }
+    });
+
+    await Promise.allSettled(promises);
+    chatSend.disabled = false;
+    chatSend.textContent = 'Send';
+  }
+
+  chatSend.addEventListener('click', sendMessage);
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+
+  // Keep visitor heartbeat alive
+  setInterval(() => {
+    fetch('/api/heartbeat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: 'visitor', name: 'You (Visitor)', state: 'idle', color: '#4ade80' }),
+    }).catch(() => {});
+  }, 15000);
 }
 
 main().catch(console.error);
